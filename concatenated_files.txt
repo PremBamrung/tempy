@@ -1,0 +1,2120 @@
+File: ./README.md
+
+# Tempy : Temporary File Storage in Python
+
+This is a simple file management application that allows users to upload and download temporary files from any terminal using `curl` or `wget`. The backend is built using FastAPI with SQLAlchemy for database management, and the frontend is built using Streamlit. The application supports user authentication and each user has their own directory on the server.
+
+## Features
+
+- User registration and authentication
+- File upload and download
+- File space checking for each user
+- Streamlit frontend for user interaction
+- Backend API with FastAPI
+- SQLite database with SQLAlchemy
+- Dockerized using Docker Compose
+
+## Project Structure
+
+```
+project/
+│
+├── backend/
+│   ├── main.py
+│   ├── models.py
+│   ├── crud.py
+│   ├── database.py
+│   ├── security.py
+│   ├── schemas.py
+│   ├── Dockerfile
+│   └── .env
+│
+├── frontend/
+│   ├── app.py
+│   ├── Dockerfile
+│   └── .env
+│
+├── docker-compose.yml
+└── .env
+```
+
+## Installation
+
+### Prerequisites
+
+- Docker
+- Docker Compose
+
+### Steps
+
+1. Clone the repository:
+
+    ```sh
+    git clone https://github.com/yourusername/file-management-app.git
+    cd file-management-app
+    ```
+
+2. Create a `.env` file in the root directory and add the following environment variables:
+
+    ```env
+    SECRET_KEY=your-secret-key
+    SUPER_ADMIN_USERNAME=admin
+    SUPER_ADMIN_PASSWORD=adminpassword
+    ```
+
+3. Navigate to the backend directory and create a `.env` file with the following content:
+
+    ```env
+    SECRET_KEY=your-secret-key
+    SUPER_ADMIN_USERNAME=admin
+    SUPER_ADMIN_PASSWORD=adminpassword
+    ```
+
+4. Navigate to the frontend directory and create a `.env` file with the following content:
+
+    ```env
+    API_URL=http://backend:8000
+    ```
+
+5. Build and start the application using Docker Compose:
+
+    ```sh
+    docker-compose up --build
+    ```
+
+## Usage
+
+### Access the Frontend
+
+- Open your browser and navigate to `http://localhost:8501` to access the Streamlit frontend.
+
+### Using the API
+
+#### Register a new user
+
+```sh
+curl -X POST "http://localhost:8000/users/" -H "Content-Type: application/json" -d '{"username": "testuser", "email": "testuser@example.com", "full_name": "Test User", "password": "testpassword"}'
+```
+
+#### Login and get token
+
+```sh
+curl -X POST "http://localhost:8000/token" -d "username=testuser&password=testpassword"
+```
+
+#### Upload a file
+
+```sh
+curl -X POST "http://localhost:8000/upload" -H "Authorization: Bearer <your_token>" -F "file=@<path_to_your_file>"
+```
+
+#### Download a file
+
+```sh
+curl -X GET "http://localhost:8000/download/<filename>" -H "Authorization: Bearer <your_token>" -O
+```
+
+#### Check file space
+
+```sh
+curl -X GET "http://localhost:8000/filespace" -H "Authorization: Bearer <your_token>"
+```
+
+## API Endpoints
+
+- `POST /users/`: Register a new user
+- `POST /token`: Obtain a JWT token
+- `POST /upload`: Upload a file
+- `GET /download/{filename}`: Download a file
+- `GET /filespace`: Check available file space and list files
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+
+## Acknowledgements
+
+- [FastAPI](https://fastapi.tiangolo.com/)
+- [Streamlit](https://streamlit.io/)
+- [SQLAlchemy](https://www.sqlalchemy.org/)
+- [Docker](https://www.docker.com/)
+
+---
+
+
+---------------------------------------------
+File: ./backend/app/__init__.py
+
+
+---------------------------------------------
+File: ./backend/app/crud.py
+
+from datetime import datetime
+from typing import List, Optional
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from . import models, schemas
+from .security import get_password_hash, verify_password
+
+
+def get_user_by_username(db: Session, username: str):
+    return db.query(models.User).filter(models.User.username == username).first()
+
+
+def get_users(db: Session, skip: int = 0, limit: int = 10):
+    return db.query(models.User).offset(skip).limit(limit).all()
+
+
+def create_user(db: Session, user: schemas.UserCreate):
+    hashed_password = get_password_hash(user.password)
+    db_user = models.User(
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        hashed_password=hashed_password,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+def create_file(db: Session, file: schemas.FileCreate, user_id: int):
+    db_file = models.File(**file.dict(), owner_id=user_id)
+    db.add(db_file)
+    db.commit()
+    db.refresh(db_file)
+    return db_file
+
+
+def get_files(db: Session, user_id: int):
+    files = db.query(models.File).filter(models.File.owner_id == user_id).all()
+    return [file.filename for file in files]
+
+
+def update_user(db: Session, user_id: int, updated_info: schemas.UserUpdate):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user:
+        for attr, value in updated_info.dict().items():
+            setattr(user, attr, value)
+        db.commit()
+        db.refresh(user)
+        return user
+    return None
+
+
+def change_password(db: Session, user_id: int, password_data: schemas.PasswordChange):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user and verify_password(password_data.old_password, user.hashed_password):
+        user.hashed_password = get_password_hash(password_data.new_password)
+        db.commit()
+        db.refresh(user)
+        return user
+    return None
+
+
+def delete_user(db: Session, user_id: int):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user:
+        db.delete(user)
+        db.commit()
+        return True
+    return False
+
+
+def delete_file(db: Session, file_id: int, user_id: int):
+    file = (
+        db.query(models.File)
+        .filter(models.File.id == file_id, models.File.owner_id == user_id)
+        .first()
+    )
+    if file:
+        db.delete(file)
+        db.commit()
+        return True
+    return False
+
+
+def rename_file(db: Session, file_id: int, new_filename: str, user_id: int):
+    file = (
+        db.query(models.File)
+        .filter(models.File.id == file_id, models.File.owner_id == user_id)
+        .first()
+    )
+    if file:
+        file.filename = new_filename
+        db.commit()
+        db.refresh(file)
+        return file
+    return None
+
+
+def search_files(db: Session, query: str, user_id: int):
+    return (
+        db.query(models.File)
+        .filter(
+            models.File.owner_id == user_id, models.File.filename.ilike(f"%{query}%")
+        )
+        .all()
+    )
+
+
+def filter_files(
+    db: Session,
+    file_type: Optional[str],
+    min_size: Optional[int],
+    max_size: Optional[int],
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    user_id: int,
+):
+    query = db.query(models.File).filter(models.File.owner_id == user_id)
+    if file_type:
+        query = query.filter(models.File.file_type == file_type)
+    if min_size:
+        query = query.filter(models.File.size >= min_size)
+    if max_size:
+        query = query.filter(models.File.size <= max_size)
+    if start_date:
+        query = query.filter(models.File.created_at >= start_date)
+    if end_date:
+        query = query.filter(models.File.created_at <= end_date)
+    return query.all()
+
+
+def get_file_history(db: Session, file_id: int):
+    return (
+        db.query(models.FileHistory).filter(models.FileHistory.file_id == file_id).all()
+    )
+
+
+def user_activity_log(db: Session, user_id: int):
+    return (
+        db.query(models.UserActivityLog)
+        .filter(models.UserActivityLog.user_id == user_id)
+        .all()
+    )
+
+
+def usage_statistics(db: Session, user_id: int):
+    total_uploads = (
+        db.query(models.File).filter(models.File.owner_id == user_id).count()
+    )
+    total_storage_used = (
+        db.query(func.sum(models.File.size))
+        .filter(models.File.owner_id == user_id)
+        .scalar()
+        or 0
+    )
+    return {"total_uploads": total_uploads, "total_storage_used": total_storage_used}
+
+
+# def generate_reports(db: Session, start_date: Optional[datetime], end_date: Optional[datetime], user_id: int):
+#     # Implement your report generation logic here
+#     pass
+
+---------------------------------------------
+File: ./backend/app/database.py
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
+
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+---------------------------------------------
+File: ./backend/app/main.py
+
+import os
+import shutil
+from datetime import datetime, timedelta
+from typing import List, Optional
+
+from app import crud, models, schemas, security
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from sqladmin import Admin, ModelView
+from sqlalchemy.orm import Session
+
+from . import crud
+from .database import Base, SessionLocal, engine
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+# Initialize SQLAdmin and bind it to the app
+admin = Admin(app, engine)
+# Load environment variables
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Load default user credentials
+DEFAULT_USER_USERNAME = os.getenv("DEFAULT_USER_USERNAME")
+DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+FILE_STORAGE = "/app/storage"
+
+os.makedirs(FILE_STORAGE, exist_ok=True)
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+# Define admin views for User model
+class UserAdmin(ModelView, model=models.User):
+    column_list = ["id", "username", "email", "full_name", "disabled"]
+
+
+# Define admin views for File model
+class FileAdmin(ModelView, model=models.File):
+    column_list = ["id", "filename", "owner"]
+
+
+# Add UserAdmin and FileAdmin views to the SQLAdmin instance
+admin.add_view(UserAdmin)
+admin.add_view(FileAdmin)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# Super Admin creation
+def create_default_user():
+    db = SessionLocal()
+    try:
+        if DEFAULT_USER_USERNAME and DEFAULT_USER_PASSWORD:
+            if not crud.get_user_by_username(db, username=DEFAULT_USER_USERNAME):
+                default_user = schemas.UserCreate(
+                    username=DEFAULT_USER_USERNAME,
+                    password=DEFAULT_USER_PASSWORD,
+                    email=f"{DEFAULT_USER_USERNAME}@example.com",
+                    full_name="Default User",
+                )
+                crud.create_user(db=db, user=default_user)
+    finally:
+        db.close()
+
+
+# Call create_default_user function to create default user
+@app.on_event("startup")
+async def startup_event():
+    # This code will run when the application starts up
+    create_default_user()
+
+
+@app.post("/token", response_model=schemas.Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
+):
+    user = crud.get_user_by_username(db, username=form_data.username)
+    if not user or not security.verify_password(
+        form_data.password, user.hashed_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise credentials_exception
+    return user
+
+
+@app.post("/users/", response_model=schemas.User)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_username(db, username=user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return crud.create_user(db=db, user=user)
+
+
+# Endpoint to list users
+@app.get("/users/", response_model=List[schemas.User])
+async def list_users(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    return crud.get_users(db, skip=skip, limit=limit)
+
+
+# Upload File
+@app.post("/upload", response_model=schemas.File)
+async def upload_file(
+    file: UploadFile = File(...),
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_dir = os.path.join(FILE_STORAGE, current_user.username)
+    os.makedirs(user_dir, exist_ok=True)
+    file_path = os.path.join(user_dir, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    file_create = schemas.FileCreate(filename=file.filename)
+    # Create file entry in the database
+    new_file = crud.create_file(db=db, file=file_create, user_id=current_user.id)
+    # Log user activity
+    crud.create_user_activity_log(db=db, user_id=current_user.id, action=f"Uploaded file '{file.filename}'")
+    return new_file
+
+# Download File
+@app.get("/download/{filename}")
+async def download_file(
+    filename: str, current_user: schemas.User = Depends(get_current_user),db: Session = Depends(get_db)
+):
+    user_dir = os.path.join(FILE_STORAGE, current_user.username)
+    file_path = os.path.join(user_dir, filename)
+    if os.path.exists(file_path):
+        # Log user activity
+        crud.create_user_activity_log(db=db, user_id=current_user.id, action=f"Downloaded file '{filename}'")
+        return FileResponse(file_path)
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.get("/filespace", response_model=schemas.Filespace)
+async def check_filespace(
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    files = crud.get_files(db=db, user_id=current_user.id)
+    total_size = sum(
+        os.path.getsize(os.path.join(FILE_STORAGE, current_user.username, f))
+        for f in files
+    )
+    return {"files": files, "total_size": total_size}
+
+
+# Update User Information
+@app.put("/users/{user_id}")
+def update_user_info(
+    user_id: int,
+    updated_info: schemas.UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    user = crud.update_user(db=db, user_id=user_id, updated_info=updated_info)
+    if user:
+        # Log user activity
+        crud.create_user_activity_log(db=db, user_id=current_user.id, action="Updated user information")
+        return user
+    else:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
+# Change Password
+@app.put("/users/{user_id}/change-password")
+def change_password(
+    user_id: int,
+    password_data: schemas.PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    user = crud.change_password(db=db, user_id=user_id, password_data=password_data)
+    if user:
+        # Log user activity
+        crud.create_user_activity_log(db=db, user_id=current_user.id, action="Changed password")
+        return user
+    else:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
+# Delete Account
+@app.delete("/users/{user_id}")
+def delete_account(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    success = crud.delete_user(db=db, user_id=user_id)
+    if success:
+        # Log user activity
+        crud.create_user_activity_log(db=db, user_id=current_user.id, action="Deleted account")
+        return {"message": "User deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
+# Delete File
+@app.delete("/files/{file_id}")
+def delete_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    success = crud.delete_file(db=db, file_id=file_id, user_id=current_user.id)
+    if success:
+        # Log user activity
+        crud.create_user_activity_log(db=db, user_id=current_user.id, action="Deleted file")
+        return {"message": "File deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
+# Rename File
+@app.put("/files/{file_id}")
+def rename_file(
+    file_id: int,
+    new_filename: str,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    file = crud.rename_file(
+        db=db, file_id=file_id, new_filename=new_filename, user_id=current_user.id
+    )
+    if file:
+        # Log user activity
+        crud.create_user_activity_log(db=db, user_id=current_user.id, action=f"Renamed file '{new_filename}'")
+        return file
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
+
+# Search Files
+@app.get("/files/search")
+def search_files(
+    query: str,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    files = crud.search_files(db=db, query=query, user_id=current_user.id)
+    return files
+
+
+# Filter Files
+@app.get("/files/filter")
+def filter_files(
+    file_type: Optional[str] = None,
+    min_size: Optional[int] = None,
+    max_size: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    files = crud.filter_files(
+        db=db,
+        file_type=file_type,
+        min_size=min_size,
+        max_size=max_size,
+        start_date=start_date,
+        end_date=end_date,
+        user_id=current_user.id,
+    )
+    return files
+
+
+# View File History
+@app.get("/files/{file_id}/history")
+def view_file_history(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    file_history = crud.get_file_history(db=db, file_id=file_id)
+    return file_history
+
+
+# User Activity Log
+@app.get("/users/me/activity-log")
+def user_activity_log(
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    activity_log = crud.user_activity_log(db=db, user_id=current_user.id)
+    return activity_log
+
+
+# Usage Statistics
+@app.get("/statistics")
+def usage_statistics(
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    statistics = crud.usage_statistics(db=db, user_id=current_user.id)
+    return statistics
+
+
+# # Generate Reports
+# @app.get("/reports")
+# def generate_reports(
+#     start_date: Optional[datetime] = None,
+#     end_date: Optional[datetime] = None,
+#     db: Session = Depends(get_db),
+#     current_user: schemas.User = Depends(get_current_user),
+# ):
+#     reports = crud.generate_reports(
+#         db=db, start_date=start_date, end_date=end_date, user_id=current_user.id
+#     )
+#     return reports
+
+---------------------------------------------
+File: ./backend/app/models.py
+
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime
+from sqlalchemy.orm import relationship
+from .database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
+    full_name = Column(String, index=True)
+    hashed_password = Column(String)
+    disabled = Column(Boolean, default=False)
+
+    files = relationship("File", back_populates="owner")
+    file_history = relationship("FileHistory", back_populates="user")
+    user_activity_log = relationship("UserActivityLog", back_populates="user")
+
+
+class File(Base):
+    __tablename__ = "files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+
+    owner = relationship("User", back_populates="files")
+    history = relationship("FileHistory", back_populates="file")
+
+
+class FileHistory(Base):
+    __tablename__ = "file_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("files.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    action = Column(String)
+    timestamp = Column(DateTime)
+
+    file = relationship("File", back_populates="history")
+    user = relationship("User", back_populates="file_history")
+
+class UserActivityLog(Base):
+    __tablename__ = "user_activity_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    action = Column(String)
+    timestamp = Column(DateTime)
+
+    user = relationship("User", back_populates="user_activity_log")
+
+---------------------------------------------
+File: ./backend/app/schemas.py
+
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel
+
+
+class UserBase(BaseModel):
+    username: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+
+
+class UserCreate(UserBase):
+    password: str
+
+
+class User(UserBase):
+    id: int
+    disabled: bool
+    files: List["File"] = []
+
+    class Config:
+        orm_mode = True
+
+
+class FileBase(BaseModel):
+    filename: str
+
+
+class FileCreate(FileBase):
+    pass
+
+
+class File(FileBase):
+    id: int
+    owner_id: int
+
+    class Config:
+        orm_mode = True
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+    class Config:
+        orm_mode = True
+
+
+class Filespace(BaseModel):
+    files: List[str]
+    total_size: int
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+
+
+class PasswordChange(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class FileHistory(BaseModel):
+    id: int
+    file_id: int
+    action: str
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class UserActivityLog(BaseModel):
+    id: int
+    user_id: int
+    action: str
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True
+
+---------------------------------------------
+File: ./backend/app/security.py
+
+import bcrypt
+
+
+def verify_password(plain_password, hashed_password):
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"), hashed_password.encode("utf-8")
+    )
+
+
+def get_password_hash(password):
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password.encode("utf-8"), salt)
+    return hashed_password.decode("utf-8")
+
+---------------------------------------------
+File: ./backend/requirements.txt
+
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+python-multipart
+bcrypt
+python-jose[cryptography]
+python-dotenv
+sqladmin
+---------------------------------------------
+File: ./backend/storage/admin/concatenated_files.txt
+
+File: ./README.md
+
+# File Management App
+
+This is a simple file management application that allows users to upload and download temporary files from any terminal using `curl` or `wget`. The backend is built using FastAPI with SQLAlchemy for database management, and the frontend is built using Streamlit. The application supports user authentication and each user has their own directory on the server.
+
+## Features
+
+- User registration and authentication
+- File upload and download
+- File space checking for each user
+- Streamlit frontend for user interaction
+- Backend API with FastAPI
+- SQLite database with SQLAlchemy
+- Dockerized using Docker Compose
+
+## Project Structure
+
+```
+project/
+│
+├── backend/
+│   ├── main.py
+│   ├── models.py
+│   ├── crud.py
+│   ├── database.py
+│   ├── security.py
+│   ├── schemas.py
+│   ├── Dockerfile
+│   └── .env
+│
+├── frontend/
+│   ├── app.py
+│   ├── Dockerfile
+│   └── .env
+│
+├── docker-compose.yml
+└── .env
+```
+
+## Installation
+
+### Prerequisites
+
+- Docker
+- Docker Compose
+
+### Steps
+
+1. Clone the repository:
+
+    ```sh
+    git clone https://github.com/yourusername/file-management-app.git
+    cd file-management-app
+    ```
+
+2. Create a `.env` file in the root directory and add the following environment variables:
+
+    ```env
+    SECRET_KEY=your-secret-key
+    SUPER_ADMIN_USERNAME=admin
+    SUPER_ADMIN_PASSWORD=adminpassword
+    ```
+
+3. Navigate to the backend directory and create a `.env` file with the following content:
+
+    ```env
+    SECRET_KEY=your-secret-key
+    SUPER_ADMIN_USERNAME=admin
+    SUPER_ADMIN_PASSWORD=adminpassword
+    ```
+
+4. Navigate to the frontend directory and create a `.env` file with the following content:
+
+    ```env
+    API_URL=http://backend:8000
+    ```
+
+5. Build and start the application using Docker Compose:
+
+    ```sh
+    docker-compose up --build
+    ```
+
+## Usage
+
+### Access the Frontend
+
+- Open your browser and navigate to `http://localhost:8501` to access the Streamlit frontend.
+
+### Using the API
+
+#### Register a new user
+
+```sh
+curl -X POST "http://localhost:8000/users/" -H "Content-Type: application/json" -d '{"username": "testuser", "email": "testuser@example.com", "full_name": "Test User", "password": "testpassword"}'
+```
+
+#### Login and get token
+
+```sh
+curl -X POST "http://localhost:8000/token" -d "username=testuser&password=testpassword"
+```
+
+#### Upload a file
+
+```sh
+curl -X POST "http://localhost:8000/upload" -H "Authorization: Bearer <your_token>" -F "file=@<path_to_your_file>"
+```
+
+#### Download a file
+
+```sh
+curl -X GET "http://localhost:8000/download/<filename>" -H "Authorization: Bearer <your_token>" -O
+```
+
+#### Check file space
+
+```sh
+curl -X GET "http://localhost:8000/filespace" -H "Authorization: Bearer <your_token>"
+```
+
+## API Endpoints
+
+- `POST /users/`: Register a new user
+- `POST /token`: Obtain a JWT token
+- `POST /upload`: Upload a file
+- `GET /download/{filename}`: Download a file
+- `GET /filespace`: Check available file space and list files
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+
+## Acknowledgements
+
+- [FastAPI](https://fastapi.tiangolo.com/)
+- [Streamlit](https://streamlit.io/)
+- [SQLAlchemy](https://www.sqlalchemy.org/)
+- [Docker](https://www.docker.com/)
+
+---
+
+
+---------------------------------------------
+File: ./backend/app/__init__.py
+
+
+---------------------------------------------
+File: ./backend/app/crud.py
+
+from sqlalchemy.orm import Session
+from . import models, schemas
+from .security import get_password_hash
+
+def get_user_by_username(db: Session, username: str):
+    return db.query(models.User).filter(models.User.username == username).first()
+
+def get_users(db: Session, skip: int = 0, limit: int = 10):
+    return db.query(models.User).offset(skip).limit(limit).all()
+
+def create_user(db: Session, user: schemas.UserCreate):
+    hashed_password = get_password_hash(user.password)
+    db_user = models.User(username=user.username, email=user.email, full_name=user.full_name, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def create_file(db: Session, file: schemas.FileCreate, user_id: int):
+    db_file = models.File(**file.dict(), owner_id=user_id)
+    db.add(db_file)
+    db.commit()
+    db.refresh(db_file)
+    return db_file
+
+def get_files(db: Session, user_id: int):
+    return db.query(models.File).filter(models.File.owner_id == user_id).all()
+
+---------------------------------------------
+File: ./backend/app/database.py
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+---------------------------------------------
+File: ./backend/app/main.py
+
+from app import models, schemas, security,crud
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+import os
+import shutil
+from typing import Optional,List
+
+from . import crud
+from .database import SessionLocal, engine, Base
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Load default user credentials
+DEFAULT_USER_USERNAME = os.getenv("DEFAULT_USER_USERNAME")
+DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+FILE_STORAGE = "/app/storage"
+
+os.makedirs(FILE_STORAGE, exist_ok=True)
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Super Admin creation
+db = SessionLocal()
+if DEFAULT_USER_USERNAME and DEFAULT_USER_PASSWORD:
+    if not crud.get_user_by_username(db, username=DEFAULT_USER_USERNAME):
+        default_user = schemas.UserCreate(
+            username=DEFAULT_USER_USERNAME,
+            password=DEFAULT_USER_PASSWORD,
+            email=f"{DEFAULT_USER_USERNAME}@example.com",
+            full_name="Default User"
+        )
+        crud.create_user(db=db, user=default_user)
+db.close()
+
+
+@app.post("/token", response_model=schemas.Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = crud.get_user_by_username(db, username=form_data.username)
+    if not user or not security.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
+    return {"access_token": access_token, "token_type": "bearer"}
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise credentials_exception
+    return user
+
+@app.post("/users/", response_model=schemas.User)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_username(db, username=user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return crud.create_user(db=db, user=user)
+# Endpoint to list users
+@app.get("/users/", response_model=List[schemas.User])
+async def list_users(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    return crud.get_users(db, skip=skip, limit=limit)
+
+
+@app.post("/upload", response_model=schemas.File)
+async def upload_file(file: UploadFile = File(...), current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_dir = os.path.join(FILE_STORAGE, current_user.username)
+    os.makedirs(user_dir, exist_ok=True)
+    file_path = os.path.join(user_dir, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    file_create = schemas.FileCreate(filename=file.filename)
+    return crud.create_file(db=db, file=file_create, user_id=current_user.id)
+
+@app.get("/download/{filename}")
+async def download_file(filename: str, current_user: schemas.User = Depends(get_current_user)):
+    user_dir = os.path.join(FILE_STORAGE, current_user.username)
+    file_path = os.path.join(user_dir, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="File not found")
+
+@app.get("/filespace", response_model=schemas.User)
+async def check_filespace(current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    files = crud.get_files(db=db, user_id=current_user.id)
+    total_size = sum(os.path.getsize(os.path.join(FILE_STORAGE, current_user.username, f.filename)) for f in files)
+    return {"files": files, "total_size": total_size}
+
+# Super Admin creation
+super_admin_username = os.getenv("SUPER_ADMIN_USERNAME")
+super_admin_password = os.getenv("SUPER_ADMIN_PASSWORD")
+if super_admin_username and super_admin_password:
+    db = SessionLocal()
+    if not crud.get_user_by_username(db, username=super_admin_username):
+        super_admin = schemas.UserCreate(
+            username=super_admin_username,
+            password=super_admin_password,
+            email=f"{super_admin_username}@example.com",
+            full_name="Super Admin"
+        )
+        crud.create_user(db=db, user=super_admin)
+    db.close()
+
+---------------------------------------------
+File: ./backend/app/models.py
+
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy.orm import relationship
+from .database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
+    full_name = Column(String, index=True)
+    hashed_password = Column(String)
+    disabled = Column(Boolean, default=False)
+
+    files = relationship("File", back_populates="owner")
+
+class File(Base):
+    __tablename__ = "files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+
+    owner = relationship("User", back_populates="files")
+
+---------------------------------------------
+File: ./backend/app/schemas.py
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+class UserBase(BaseModel):
+    username: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    disabled: bool
+    files: List["File"] = []
+
+    class Config:
+        orm_mode = True
+
+class FileBase(BaseModel):
+    filename: str
+
+class FileCreate(FileBase):
+    pass
+
+class File(FileBase):
+    id: int
+    owner_id: int
+
+    class Config:
+        orm_mode = True
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+    class Config:
+        orm_mode = True
+
+---------------------------------------------
+File: ./backend/app/security.py
+
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+---------------------------------------------
+File: ./backend/requirements.txt
+
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+python-multipart
+passlib[bcrypt]
+python-jose[cryptography]
+python-dotenv
+---------------------------------------------
+File: ./docker-compose.yaml
+
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/test.db:/app/test.db
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    env_file:
+      - ./frontend/.env
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"
+
+---------------------------------------------
+File: ./frontend/app.py
+
+import streamlit as st
+import requests
+import os
+
+API_URL = "http://backend:8000"
+
+st.title("File Management App")
+
+if "token" not in st.session_state:
+    st.session_state.token = None
+
+def login():
+    st.session_state.token = requests.post(
+        f"{API_URL}/token",
+        data={"username": st.session_state.username, "password": st.session_state.password}
+    ).json().get("access_token")
+
+def logout():
+    st.session_state.token = None
+
+if st.session_state.token:
+    st.sidebar.button("Logout", on_click=logout)
+    st.write("Logged in as", st.session_state.username)
+
+    st.subheader("Upload a file")
+    uploaded_file = st.file_uploader("Choose a file")
+    if uploaded_file is not None:
+        files = {"file": uploaded_file.getvalue()}
+        response = requests.post(
+            f"{API_URL}/upload",
+            headers={"Authorization": f"Bearer {st.session_state.token}"},
+            files=files
+        )
+        st.write(response.json())
+
+    st.subheader("Check available files and space")
+    response = requests.get(
+        f"{API_URL}/filespace",
+        headers={"Authorization": f"Bearer {st.session_state.token}"}
+    )
+    data = response.json()
+    st.write("Files:", data["files"])
+    st.write("Total size:", data["total_size"], "bytes")
+else:
+    st.subheader("Login")
+    st.text_input("Username", key="username")
+    st.text_input("Password", type="password", key="password")
+    st.button("Login", on_click=login)
+
+---------------------------------------------
+File: ./frontend/requirements.txt
+
+streamlit
+requests
+---------------------------------------------
+
+---------------------------------------------
+File: ./backend/storage/admin/test_file.txt
+
+Test content
+---------------------------------------------
+File: ./backend/storage/prem/concatenated_files.txt
+
+File: ./README.md
+
+# File Management App
+
+This is a simple file management application that allows users to upload and download temporary files from any terminal using `curl` or `wget`. The backend is built using FastAPI with SQLAlchemy for database management, and the frontend is built using Streamlit. The application supports user authentication and each user has their own directory on the server.
+
+## Features
+
+- User registration and authentication
+- File upload and download
+- File space checking for each user
+- Streamlit frontend for user interaction
+- Backend API with FastAPI
+- SQLite database with SQLAlchemy
+- Dockerized using Docker Compose
+
+## Project Structure
+
+```
+project/
+│
+├── backend/
+│   ├── main.py
+│   ├── models.py
+│   ├── crud.py
+│   ├── database.py
+│   ├── security.py
+│   ├── schemas.py
+│   ├── Dockerfile
+│   └── .env
+│
+├── frontend/
+│   ├── app.py
+│   ├── Dockerfile
+│   └── .env
+│
+├── docker-compose.yml
+└── .env
+```
+
+## Installation
+
+### Prerequisites
+
+- Docker
+- Docker Compose
+
+### Steps
+
+1. Clone the repository:
+
+    ```sh
+    git clone https://github.com/yourusername/file-management-app.git
+    cd file-management-app
+    ```
+
+2. Create a `.env` file in the root directory and add the following environment variables:
+
+    ```env
+    SECRET_KEY=your-secret-key
+    SUPER_ADMIN_USERNAME=admin
+    SUPER_ADMIN_PASSWORD=adminpassword
+    ```
+
+3. Navigate to the backend directory and create a `.env` file with the following content:
+
+    ```env
+    SECRET_KEY=your-secret-key
+    SUPER_ADMIN_USERNAME=admin
+    SUPER_ADMIN_PASSWORD=adminpassword
+    ```
+
+4. Navigate to the frontend directory and create a `.env` file with the following content:
+
+    ```env
+    API_URL=http://backend:8000
+    ```
+
+5. Build and start the application using Docker Compose:
+
+    ```sh
+    docker-compose up --build
+    ```
+
+## Usage
+
+### Access the Frontend
+
+- Open your browser and navigate to `http://localhost:8501` to access the Streamlit frontend.
+
+### Using the API
+
+#### Register a new user
+
+```sh
+curl -X POST "http://localhost:8000/users/" -H "Content-Type: application/json" -d '{"username": "testuser", "email": "testuser@example.com", "full_name": "Test User", "password": "testpassword"}'
+```
+
+#### Login and get token
+
+```sh
+curl -X POST "http://localhost:8000/token" -d "username=testuser&password=testpassword"
+```
+
+#### Upload a file
+
+```sh
+curl -X POST "http://localhost:8000/upload" -H "Authorization: Bearer <your_token>" -F "file=@<path_to_your_file>"
+```
+
+#### Download a file
+
+```sh
+curl -X GET "http://localhost:8000/download/<filename>" -H "Authorization: Bearer <your_token>" -O
+```
+
+#### Check file space
+
+```sh
+curl -X GET "http://localhost:8000/filespace" -H "Authorization: Bearer <your_token>"
+```
+
+## API Endpoints
+
+- `POST /users/`: Register a new user
+- `POST /token`: Obtain a JWT token
+- `POST /upload`: Upload a file
+- `GET /download/{filename}`: Download a file
+- `GET /filespace`: Check available file space and list files
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+
+## Acknowledgements
+
+- [FastAPI](https://fastapi.tiangolo.com/)
+- [Streamlit](https://streamlit.io/)
+- [SQLAlchemy](https://www.sqlalchemy.org/)
+- [Docker](https://www.docker.com/)
+
+---
+
+
+---------------------------------------------
+File: ./backend/app/__init__.py
+
+
+---------------------------------------------
+File: ./backend/app/crud.py
+
+from sqlalchemy.orm import Session
+from . import models, schemas
+from .security import get_password_hash
+
+def get_user_by_username(db: Session, username: str):
+    return db.query(models.User).filter(models.User.username == username).first()
+
+def get_users(db: Session, skip: int = 0, limit: int = 10):
+    return db.query(models.User).offset(skip).limit(limit).all()
+
+def create_user(db: Session, user: schemas.UserCreate):
+    hashed_password = get_password_hash(user.password)
+    db_user = models.User(username=user.username, email=user.email, full_name=user.full_name, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def create_file(db: Session, file: schemas.FileCreate, user_id: int):
+    db_file = models.File(**file.dict(), owner_id=user_id)
+    db.add(db_file)
+    db.commit()
+    db.refresh(db_file)
+    return db_file
+
+def get_files(db: Session, user_id: int):
+    return db.query(models.File).filter(models.File.owner_id == user_id).all()
+
+---------------------------------------------
+File: ./backend/app/database.py
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+---------------------------------------------
+File: ./backend/app/main.py
+
+from app import models, schemas, security,crud
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+import os
+import shutil
+from typing import Optional,List
+
+from . import crud
+from .database import SessionLocal, engine, Base
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Load default user credentials
+DEFAULT_USER_USERNAME = os.getenv("DEFAULT_USER_USERNAME")
+DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+FILE_STORAGE = "/app/storage"
+
+os.makedirs(FILE_STORAGE, exist_ok=True)
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Super Admin creation
+db = SessionLocal()
+if DEFAULT_USER_USERNAME and DEFAULT_USER_PASSWORD:
+    if not crud.get_user_by_username(db, username=DEFAULT_USER_USERNAME):
+        default_user = schemas.UserCreate(
+            username=DEFAULT_USER_USERNAME,
+            password=DEFAULT_USER_PASSWORD,
+            email=f"{DEFAULT_USER_USERNAME}@example.com",
+            full_name="Default User"
+        )
+        crud.create_user(db=db, user=default_user)
+db.close()
+
+
+@app.post("/token", response_model=schemas.Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = crud.get_user_by_username(db, username=form_data.username)
+    if not user or not security.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
+    return {"access_token": access_token, "token_type": "bearer"}
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise credentials_exception
+    return user
+
+@app.post("/users/", response_model=schemas.User)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_username(db, username=user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return crud.create_user(db=db, user=user)
+# Endpoint to list users
+@app.get("/users/", response_model=List[schemas.User])
+async def list_users(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    return crud.get_users(db, skip=skip, limit=limit)
+
+
+@app.post("/upload", response_model=schemas.File)
+async def upload_file(file: UploadFile = File(...), current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_dir = os.path.join(FILE_STORAGE, current_user.username)
+    os.makedirs(user_dir, exist_ok=True)
+    file_path = os.path.join(user_dir, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    file_create = schemas.FileCreate(filename=file.filename)
+    return crud.create_file(db=db, file=file_create, user_id=current_user.id)
+
+@app.get("/download/{filename}")
+async def download_file(filename: str, current_user: schemas.User = Depends(get_current_user)):
+    user_dir = os.path.join(FILE_STORAGE, current_user.username)
+    file_path = os.path.join(user_dir, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="File not found")
+
+@app.get("/filespace", response_model=schemas.User)
+async def check_filespace(current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    files = crud.get_files(db=db, user_id=current_user.id)
+    total_size = sum(os.path.getsize(os.path.join(FILE_STORAGE, current_user.username, f.filename)) for f in files)
+    return {"files": files, "total_size": total_size}
+
+# Super Admin creation
+super_admin_username = os.getenv("SUPER_ADMIN_USERNAME")
+super_admin_password = os.getenv("SUPER_ADMIN_PASSWORD")
+if super_admin_username and super_admin_password:
+    db = SessionLocal()
+    if not crud.get_user_by_username(db, username=super_admin_username):
+        super_admin = schemas.UserCreate(
+            username=super_admin_username,
+            password=super_admin_password,
+            email=f"{super_admin_username}@example.com",
+            full_name="Super Admin"
+        )
+        crud.create_user(db=db, user=super_admin)
+    db.close()
+
+---------------------------------------------
+File: ./backend/app/models.py
+
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy.orm import relationship
+from .database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
+    full_name = Column(String, index=True)
+    hashed_password = Column(String)
+    disabled = Column(Boolean, default=False)
+
+    files = relationship("File", back_populates="owner")
+
+class File(Base):
+    __tablename__ = "files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+
+    owner = relationship("User", back_populates="files")
+
+---------------------------------------------
+File: ./backend/app/schemas.py
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+class UserBase(BaseModel):
+    username: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    disabled: bool
+    files: List["File"] = []
+
+    class Config:
+        orm_mode = True
+
+class FileBase(BaseModel):
+    filename: str
+
+class FileCreate(FileBase):
+    pass
+
+class File(FileBase):
+    id: int
+    owner_id: int
+
+    class Config:
+        orm_mode = True
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+    class Config:
+        orm_mode = True
+
+---------------------------------------------
+File: ./backend/app/security.py
+
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+---------------------------------------------
+File: ./backend/requirements.txt
+
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+python-multipart
+passlib[bcrypt]
+python-jose[cryptography]
+python-dotenv
+---------------------------------------------
+File: ./docker-compose.yaml
+
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/test.db:/app/test.db
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    env_file:
+      - ./frontend/.env
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"
+
+---------------------------------------------
+File: ./frontend/app.py
+
+import streamlit as st
+import requests
+import os
+
+API_URL = "http://backend:8000"
+
+st.title("File Management App")
+
+if "token" not in st.session_state:
+    st.session_state.token = None
+
+def login():
+    st.session_state.token = requests.post(
+        f"{API_URL}/token",
+        data={"username": st.session_state.username, "password": st.session_state.password}
+    ).json().get("access_token")
+
+def logout():
+    st.session_state.token = None
+
+if st.session_state.token:
+    st.sidebar.button("Logout", on_click=logout)
+    st.write("Logged in as", st.session_state.username)
+
+    st.subheader("Upload a file")
+    uploaded_file = st.file_uploader("Choose a file")
+    if uploaded_file is not None:
+        files = {"file": uploaded_file.getvalue()}
+        response = requests.post(
+            f"{API_URL}/upload",
+            headers={"Authorization": f"Bearer {st.session_state.token}"},
+            files=files
+        )
+        st.write(response.json())
+
+    st.subheader("Check available files and space")
+    response = requests.get(
+        f"{API_URL}/filespace",
+        headers={"Authorization": f"Bearer {st.session_state.token}"}
+    )
+    data = response.json()
+    st.write("Files:", data["files"])
+    st.write("Total size:", data["total_size"], "bytes")
+else:
+    st.subheader("Login")
+    st.text_input("Username", key="username")
+    st.text_input("Password", type="password", key="password")
+    st.button("Login", on_click=login)
+
+---------------------------------------------
+File: ./frontend/requirements.txt
+
+streamlit
+requests
+---------------------------------------------
+
+---------------------------------------------
+File: ./docker-compose.yaml
+
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/test.db:/app/test.db
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    env_file:
+      - ./frontend/.env
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"
+
+
+
+---------------------------------------------
+File: ./frontend/app.py
+
+import os
+
+import requests
+import streamlit as st
+
+API_URL = "http://backend:8000"
+
+st.title("File Management App")
+
+if "token" not in st.session_state:
+    st.session_state.token = None
+# Initialize session state if not already initialized
+if "username" not in st.session_state:
+    st.session_state.username = None
+
+
+def login():
+    st.session_state.token = (
+        requests.post(
+            f"{API_URL}/token",
+            data={
+                "username": st.session_state.username,
+                "password": st.session_state.password,
+            },
+        )
+        .json()
+        .get("access_token")
+    )
+
+
+def logout():
+    st.session_state.token = None
+
+
+if st.session_state.token:
+    st.sidebar.button("Logout", on_click=logout)
+    st.write("Logged in as", st.session_state.username)
+
+    st.subheader("Upload a file")
+    uploaded_file = st.file_uploader("Choose a file")
+    if uploaded_file is not None:
+        files = {"file": uploaded_file.getvalue()}
+        response = requests.post(
+            f"{API_URL}/upload",
+            headers={"Authorization": f"Bearer {st.session_state.token}"},
+            files=files,
+        )
+        st.write(response.json())
+
+    st.subheader("Check available files and space")
+    response = requests.get(
+        f"{API_URL}/filespace",
+        headers={"Authorization": f"Bearer {st.session_state.token}"},
+    )
+    data = response.json()
+    st.write("Files:", data["files"])
+    st.write("Total size:", data["total_size"], "bytes")
+else:
+    st.subheader("Login")
+    st.text_input("Username", key="username")
+    st.text_input("Password", type="password", key="password")
+    st.button("Login", on_click=login)
+
+---------------------------------------------
+File: ./frontend/requirements.txt
+
+streamlit
+requests
+---------------------------------------------
+File: ./tests/test_api.py
+
+import os
+import shutil
+
+import pytest
+import requests
+from dotenv import load_dotenv
+
+load_dotenv("backend/.env")
+
+# Mocking environment variables
+DEFAULT_USER_USERNAME = os.getenv("DEFAULT_USER_USERNAME")
+DEFAULT_USER_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
+
+# Base URL for the API
+API_URL = "http://localhost:8000"
+
+
+@pytest.fixture
+def access_token():
+    # Login to get access token
+    login_data = {
+        "username": DEFAULT_USER_USERNAME,
+        "password": DEFAULT_USER_PASSWORD,
+    }
+    response = requests.post(f"{API_URL}/token", data=login_data)
+    response_data = response.json()
+    assert response.status_code == 200
+    assert "access_token" in response_data
+    return response_data["access_token"]
+
+
+def test_create_user(access_token):
+    # Test successful user creation
+    user_data = {
+        "username": "new_user",
+        "password": "new_password",
+        "email": "new_user@example.com",
+        "full_name": "New User",
+    }
+    response = requests.post(f"{API_URL}/users/", json=user_data)
+    assert response.status_code == 200
+    assert response.json()["username"] == user_data["username"]
+
+    # Test duplicate username
+    response = requests.post(f"{API_URL}/users/", json=user_data)
+    assert response.status_code == 400
+
+
+@pytest.mark.dependency()
+def test_upload_file(access_token):
+    # Upload a file
+    files = {"file": ("test_file.txt", "Test content")}
+    response = requests.post(
+        f"{API_URL}/upload",
+        files=files,
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
+@pytest.mark.dependency(depends=["test_upload_file"])
+def test_download_file(access_token, upload_file):
+    # Download the uploaded file
+    response = requests.get(
+        f"{API_URL}/download/{upload_file}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == 200
+    assert response.content == b"Test content"
+
+    # Cleanup
+    response = requests.delete(
+        f"{API_URL}/files/{upload_file}",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert response.status_code == 200
+
+
+def test_check_filespace(access_token):
+    # Check filespace
+    response = requests.get(
+        f"{API_URL}/filespace", headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 200
+    assert "files" in response.json()
+    assert "total_size" in response.json()
+
+---------------------------------------------
